@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
+import {FunctionsClient} from "@chainlink/contracts/src/v0.8/FunctionsClient.sol";
+import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/FunctionsRequest.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {console} from "forge-std/console.sol"; //for debugging
 
-contract StackelbergAuction {
+contract StackelbergAuction is FunctionsClient {
     using SafeERC20 for IERC20; //apply the Safe Wrapper to each IERC20 method
 
     uint256 private constant WAD = 1e18; //used to scale
 
     IERC20 public immutable energyToken; //reference to the energy token
+    address public oracle; // address of the oracle that retrieves data off chain
 
     struct Seller {
         address addr; //address of the seller
@@ -34,6 +38,8 @@ contract StackelbergAuction {
     uint256 public totalAllocated; // The total quantity of energy that was successfully allocated to buyers in the auction (kWh (WAD scaled))
     uint256 public totalPaidWei; // The total amount of ETH that was paid by buyers to sellers in the auction
 
+    event CapacityUpdated(uint256 newCapacityWad); // emits the log of the sellers capacity updated
+    event OracleUpdated(address newOracle); //emits the log of the oracle address updated
     event SellerRegistered(address indexed seller, uint256 unitCostWei); // emits the log of registering the sellers address and unit cost per wei
     event SellerTokenDeposit(uint256 amount); // emits the log of a seller depositing Energy tokens
     event SellerTokenWithdrawal(uint256 amount); // emits the log of a seller withdrawing Energy tokens
@@ -52,15 +58,28 @@ contract StackelbergAuction {
         _;
     }
 
+    modifier onlyOracle() {
+        require(msg.sender == oracle, "Only oracle");
+        _; // Continue with the function execution
+    }
+
     modifier notLocked() {
         require(!auctionLocked, "Auction is locked"); //modifier to restrict access when auction is locked
         _;
     }
 
-    constructor(IERC20 _energyToken) {
+    constructor(IERC20 _energyToken, address _oracle) {
         // constructor to initialize the contract with the EnergyToken address
         require(address(_energyToken) != address(0), "Invalid token address"); // Check for valid token address
+        require(_oracle != address(0), "Invalid oracle address"); // Check for valid oracle address
         energyToken = _energyToken; // Set the energy token
+        oracle = _oracle;
+    }
+
+    function setOracle(address newOracle) external {
+        require(newOracle != address(0), "Invalid oracle address"); // Check for valid oracle address
+        oracle = newOracle; // Update the oracle address
+        emit OracleUpdated(newOracle); // Emit an event for the oracle update
     }
 
     function registerSeller(uint256 unitCostWeiPerKWhWad) external notLocked {
@@ -76,6 +95,15 @@ contract StackelbergAuction {
             active: true
         }); //registers the seller
         emit SellerRegistered(msg.sender, unitCostWeiPerKWhWad); //emits the log of registering the sellers address and unit cost per wei
+    }
+
+    function updateCapacity(uint256 netWad) external onlySeller notLocked {
+        require(seller.active, "No seller"); // Ensures the seller is registered
+        require(netWad > 0, "No surplus"); // Ensures the net capacity is greater than zero to check the seller has surplus
+
+        energyToken.safeTransferFrom(seller.addr, address(this), netWad); // Transfers energy tokens from the seller to the contract
+
+        emit CapacityUpdated(netWad); //emits the log of the new capacity
     }
 
     function depositEnergyTokens(uint256 amount) external onlySeller notLocked {
@@ -142,15 +170,21 @@ contract StackelbergAuction {
         (uint256 sumA, uint256 sumB) = _sumAB(); // Get the sum of A and B and store it in the respective variables
         require(sumB > 0, "sumB=0"); // Ensure the sum of B is greater than zero
 
+        console.log("sumA:", sumA);
+        console.log("sumB:", sumB);
+        console.log("sellerCost:", seller.unitCostWei);
+
         //Unconstrained p0 = (SumA/2*SumB) + c/2 - for maximum profit for seller with no constraints
-        uint256 p0 = _add(
-            _divW(_sumFrac(sumA, 2 * sumB), seller.unitCostWei / 2),
-            seller.unitCostWei / 2
-        );
+        uint256 frac = _divW(sumA, 2 * sumB);
+        uint256 p0 = _add(frac, seller.unitCostWei / 2);
         uint256 q0 = _zeroFloor(_sub(sumA, _mulW(sumB, p0))); // Calculate the total quantity for maximum profit
 
         uint256 pStar = p0; //optimal monopoly price
         uint256 qStar = q0; //optimal monopoly quantity
+
+        console.log("frac:", frac);
+        console.log("p0:", p0);
+        console.log("q0:", q0);
 
         if (q0 == 0) {
             //Quantity is Zero when demand curve hits the x axis and there is a choke price
