@@ -16,41 +16,41 @@ contract StackelbergAuctionTest is Test {
     function setUp() public {
         //deploy token + auction
         energyToken = new EnergyToken();
-        auction = new StackelbergAuction(energyToken, address(0x999));
+        auction = new StackelbergAuction(energyToken);
 
-        //delploy auction with dummy oracle address
-        energyToken.mint(seller, 100e18);
+        //mint token
+        energyToken.mint(seller, 1e18);
 
         // Seller registers and deposits energytokens
         vm.startPrank(seller);
-        energyToken.approve(address(auction), 100e18);
-        auction.registerSeller(1e16); // Register seller with a unit cost of 1 ether
-        auction.depositEnergyTokens(100e18);
+        energyToken.approve(address(auction), 1e18);
+        auction.registerSeller(2.1e14); // Register seller with a unit cost of 2.1e14 wei
+        auction.depositEnergyTokens(1e18);
         vm.stopPrank();
 
         //register buyers
         vm.prank(buyer1);
-        auction.upsertBuyer(100e18, 10e18); // demand curve params
+        auction.upsertBuyer(0.08e18, 0.003e18); // demand curve params for small flat
 
         vm.prank(buyer2);
-        auction.upsertBuyer(200e18, 20e18); // demand curve params
+        auction.upsertBuyer(0.4e18, 0.03e18); // demand curve params for family house
     }
 
     function testAuctionFlow() public {
-        // Buyer deposits ETH
-        vm.deal(buyer1, 1000e18);
+        // Flat deposits ETH
+        vm.deal(buyer1, 1e18);
         vm.prank(buyer1);
-        auction.depositETH{value: 500e18}();
+        auction.depositETH{value: 1e18}();
 
         // Buyer2 deposits ETH
-        vm.deal(buyer2, 1000e18);
+        vm.deal(buyer2, 1e18);
         vm.prank(buyer2);
-        auction.depositETH{value: 700e18}();
+        auction.depositETH{value: 1e18}();
 
         // Pre-clear logs
-        console.log("== Pre-clear ==");
-        console.log("seller ET @auction:", energyToken.balanceOf(address(auction)));
-        console.log("seller ET @seller :", energyToken.balanceOf(seller));
+        console.log("== Pre-clearing price logs ==");
+        console.log("seller ET @auction wallet:", energyToken.balanceOf(address(auction)));
+        console.log("seller ET @seller wallet:", energyToken.balanceOf(seller));
         (, , uint256 depositWei, ) = auction.buyers(buyer1);
         console.log("buyer1 depositWei:", depositWei);
         (, , depositWei, ) = auction.buyers(buyer2);
@@ -59,7 +59,7 @@ contract StackelbergAuctionTest is Test {
         //clear the auction
         vm.prank(seller);
         auction.clearAuction();
-
+        console.log("== Clearing price logs ==");
         // DEBUG: log clearing results
         console.log("Clearing price (wei):", auction.clearingPriceWei());
         console.log("Total allocated:", auction.totalAllocated());
@@ -67,7 +67,10 @@ contract StackelbergAuctionTest is Test {
         console.log("Buyer2 tokens:", energyToken.balanceOf(buyer2));
         console.log("totalPaidWei:", auction.totalPaidWei());
         console.log("Seller ETH after:", seller.balance);
-        console.log("tokens left in auction:", energyToken.balanceOf(address(auction)));
+        console.log(
+            "tokens left in auction:",
+            energyToken.balanceOf(address(auction))
+        );
 
         //Verify auction cleared
         assertGt(auction.clearingPriceWei(), 0, "price==0");

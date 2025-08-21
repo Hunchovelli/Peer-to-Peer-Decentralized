@@ -1,19 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-import {FunctionsClient} from "@chainlink/contracts/src/v0.8/FunctionsClient.sol";
-import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/FunctionsRequest.sol";
+//import {FunctionsClient} from "@chainlink/contracts/src/v0.8/functions/v1_0_0/FunctionsClient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {console} from "forge-std/console.sol"; //for debugging
 
-contract StackelbergAuction is FunctionsClient {
+contract StackelbergAuction {
+    //using FunctionsRequest for FunctionsRequest.Request; //attach all functions from the FunctionRequest library to the FunctionsRequest.Request struct
+
     using SafeERC20 for IERC20; //apply the Safe Wrapper to each IERC20 method
 
     uint256 private constant WAD = 1e18; //used to scale
 
     IERC20 public immutable energyToken; //reference to the energy token
-    address public oracle; // address of the oracle that retrieves data off chain
+
+    uint64 public subscriptionId; // Chainlink subscription ID for the oracle
+    bytes32 public donId = keccak256("fun-ethereum-sepolia-1"); //Sepolia DON ID
+
+    /*Oracle results
+    bytes32 public latestRequestId; // The latest request ID from the oracle
+    bytes public latestResult; // The latest result from the oracle
+    bytes public latestError; // The latest error from the oracle
+    uint256 public latestNetW; // The latest net capacity in WAD*/
+
+    uint256 public sampleIntervalSec = 300; // default 5 minutes
 
     struct Seller {
         address addr; //address of the seller
@@ -49,7 +60,10 @@ contract StackelbergAuction is FunctionsClient {
     event AuctionCleared(uint256 priceWei, uint256 totalQ); // emits the log of the final auction price and total quantity cleared
     event Allocation(address indexed buyer, uint256 q, uint256 paidWei); // emits the log of a buyer's allocation in terms of quantity collected and amount paid
     event Payout(address indexed seller, uint256 revenueWei); // emits the log of a seller's payout
-
+    /*event OracleRequested(bytes32 requestId);
+    event OracleFulfilled(bytes32 requestId, uint256 netW, uint256 mintedWad);
+    event CapacityPulled(uint256 amountWad);
+    event SampleIntervalUpdated(uint256 seconds_);*/
     modifier onlySeller() {
         require(
             msg.sender == seller.addr,
@@ -58,29 +72,92 @@ contract StackelbergAuction is FunctionsClient {
         _;
     }
 
-    modifier onlyOracle() {
+    /*modifier onlyOracle() {
         require(msg.sender == oracle, "Only oracle");
         _; // Continue with the function execution
-    }
+    }*/
 
     modifier notLocked() {
         require(!auctionLocked, "Auction is locked"); //modifier to restrict access when auction is locked
         _;
     }
 
-    constructor(IERC20 _energyToken, address _oracle) {
+    constructor(IERC20 _energyToken) {
         // constructor to initialize the contract with the EnergyToken address
         require(address(_energyToken) != address(0), "Invalid token address"); // Check for valid token address
-        require(_oracle != address(0), "Invalid oracle address"); // Check for valid oracle address
+        //require(oracle != address(0), "Invalid oracle address"); // Check for valid oracle address
         energyToken = _energyToken; // Set the energy token
-        oracle = _oracle;
+        /*subscriptionId = _subId; // Set the Chainlink subscription ID
+        donId = _donId; // Set the DON ID*/
     }
 
-    function setOracle(address newOracle) external {
-        require(newOracle != address(0), "Invalid oracle address"); // Check for valid oracle address
-        oracle = newOracle; // Update the oracle address
-        emit OracleUpdated(newOracle); // Emit an event for the oracle update
+    /*function setSampleInterval(uint256 seconds_) external {
+        require(seconds_ > 0, "bad interval");
+        sampleIntervalSec = seconds_;
+        emit SampleIntervalUpdated(seconds_);
     }
+
+    function setCallbackGas(uint32 gasLimit) external {
+        callbackGasLimit = gasLimit;
+    }
+
+    function requestNetPower(
+        bytes memory sourceCode,
+        string[] memory args
+    ) external {
+        FunctionRequest.Request memory req;
+        req.initializeRequest(
+            FunctionsRequest.Location.Inline,
+            FunctionsRequest.CodeLanguage.JavaScript,
+            sourceCode
+        );
+        if (args.length > 0) {
+            req.setArgs(args);
+        }
+
+        bytes32 reqId = _sendRequest(
+            req.encodeCBOR(),
+            subscriptionId,
+            callbackGasLimit,
+            donId
+        );
+        latestRequestId = reqId; // Store the request ID
+        emit OracleRequested(reqId); // Emit an event for the request
+    }
+
+    function fufillRequest(
+        bytes32 requestID,
+        bytes memory response,
+        bytes memory err
+    ) internal override {
+        latestResponse = response;
+        latestError = err;
+
+        if (err.length != 0) return;
+
+        uint256 netW = abi.decode(response, (uint256));
+        latestNetW = netW;
+
+        uint256 mintedWad = _wattsToKwhWad(netW, sampleIntervalSec);
+
+        if (seller.active && mintedWad > 0) {
+            energyToken.mint(seller.addr, mintedWad);
+
+            // If the seller is active and there is a positive minted amount
+            if (
+                energyToken.allowance(seller.addr, address(this)) >= mintedWad
+            ) {
+                // If the allowance is less than the minted amount, set it to the minted amount
+                energyToken.safeTransferFrom(
+                    seller.addr,
+                    address(this),
+                    mintedWad
+                );
+                emit CapacityPulled(mintedWad); // Emit an event for the capacity pulled
+            }
+        }
+        emit OracleFulfilled(requestID, netW, mintedWad); // Emit an event for the oracle fulfillment
+    }*/
 
     function registerSeller(uint256 unitCostWeiPerKWhWad) external notLocked {
         //only executes if the auction is not locked
@@ -94,6 +171,7 @@ contract StackelbergAuction is FunctionsClient {
             unitCostWei: unitCostWeiPerKWhWad,
             active: true
         }); //registers the seller
+        energyToken.approve(address(this), type(uint256).max);
         emit SellerRegistered(msg.sender, unitCostWeiPerKWhWad); //emits the log of registering the sellers address and unit cost per wei
     }
 
